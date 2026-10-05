@@ -3,7 +3,8 @@ run_multi_seed.py — Outer experiment launcher.
 
 Runs the full grid of:
   models:      tinyunet, pbunet         (configurable via --models)
-  conditions:  no_protection, protect_25 (configurable via --conditions)
+  conditions:  no_protection, protect_25, and configured RMT conditions
+                                            (configurable via --conditions)
   seeds:       42, 101, 202, 303        (configurable via --seeds)
 
 Each (model, condition, seed) combination is run sequentially.  A summary
@@ -32,15 +33,18 @@ import json
 import sys
 from pathlib import Path
 
-from config import RUNS_ROOT, CONDITIONS
+from config import RUNS_ROOT, CONDITIONS, RMT_CONDITIONS
 from train import train_condition
 
 # Experiment defaults
 DEFAULT_MODELS     = ["tinyunet", "pbunet"]
-DEFAULT_CONDITIONS = ["no_protection", "protect_25"]
+DEFAULT_CONDITIONS = ["no_protection", "protect_25", *RMT_CONDITIONS]
 DEFAULT_SEEDS      = [42, 101, 202, 303]
 
-SUMMARY_PATH = RUNS_ROOT / "summary_results.csv"
+# Keep the completed original summary immutable. New launches merge it in
+# memory and write additions to this separate summary file.
+LEGACY_SUMMARY_PATH = RUNS_ROOT / "summary_results.csv"
+SUMMARY_PATH = RUNS_ROOT / "summary_results_rmt.csv"
 
 SUMMARY_FIELDS = [
     "model",
@@ -57,15 +61,24 @@ SUMMARY_FIELDS = [
     "test_pred_foreground_fraction",
     "test_gt_foreground_fraction",
     "test_loss",
+    "rmt_block_size",
+    "rmt_noise_level",
+    "rmt_transform_seed",
+    "rmt_key_id",
 ]
 
 
 def load_existing_summary() -> list:
-    """Load already-written rows from summary_results.csv (if it exists)."""
-    if not SUMMARY_PATH.exists():
-        return []
-    with open(SUMMARY_PATH, newline="") as f:
-        return list(csv.DictReader(f))
+    """Merge legacy and new rows without editing the original summary."""
+    rows = []
+    for path in (LEGACY_SUMMARY_PATH, SUMMARY_PATH):
+        if path.exists():
+            with open(path, newline="") as f:
+                rows.extend(csv.DictReader(f))
+    merged = {}
+    for row in rows:
+        merged[row_key(row)] = row
+    return list(merged.values())
 
 
 def save_summary(rows: list):
@@ -116,8 +129,8 @@ def main():
         "--conditions",
         nargs="+",
         default=DEFAULT_CONDITIONS,
-        choices=list(CONDITIONS),
-        help="Condition(s) to train (default: no_protection protect_25).",
+        choices=[*CONDITIONS, *RMT_CONDITIONS],
+        help="Condition(s); RMT conditions are scheduled for TinyUNet only.",
     )
     parser.add_argument(
         "--seeds",
@@ -133,12 +146,24 @@ def main():
     args = parser.parse_args()
 
     # Build the full grid
-    grid = [
-        (model, condition, seed)
-        for model     in args.models
-        for condition in args.conditions
-        for seed      in args.seeds
-    ]
+    if any(condition in RMT_CONDITIONS for condition in args.conditions) and "tinyunet" not in args.models:
+        parser.error("RMT conditions require TinyUNet in --models.")
+
+    grid = []
+    for condition in args.conditions:
+        eligible_models = (
+            [model for model in args.models if model == "tinyunet"]
+            if condition in RMT_CONDITIONS
+            else args.models
+        )
+        grid.extend(
+            (model, condition, seed)
+            for model in eligible_models
+            for seed in args.seeds
+        )
+
+    if not grid:
+        parser.error("No eligible model/condition combinations were selected.")
 
     total = len(grid)
     print(f"\nExperiment grid: {total} runs")

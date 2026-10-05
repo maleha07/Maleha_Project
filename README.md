@@ -120,3 +120,45 @@ Diagnostic:
 
 Foreground-fraction metrics are included specifically to detect trivial model
 collapse such as predicting the whole image as foreground.
+
+## Coordinate-preserving RMT segmentation adaptation
+
+The RMT conditions are an adaptation inspired by DisguisedNets. They use
+block-wise orthogonal transforms at fixed image coordinates and intentionally
+omit block permutation. Segmentation masks are saved unchanged. RMT transforms
+the whole image; it does not implement encrypted training or inference.
+
+Conditions:
+
+- `rmt_block16_n0`
+- `rmt_block16_n005`
+- `rmt_block16_n010`
+- `rmt_block8_n005`
+- `rmt_block32_n005`
+
+RMT preprocessing uses the fixed split seed 42 and image size 256. It writes
+only new RMT condition folders, refuses to overwrite an existing RMT folder,
+and records transformation details in each condition's
+`rmt_metadata.json`, plus the exact fixed matrices in `rmt_matrices.npy`. RMT
+is not applied to PBUNet. The transformation seed is independent of training
+seeds, and its matrices/noise are stable across runs. The transform itself does not clip; processed RGB PNGs use the existing
+deterministic `[0,1]` clipping and 8-bit serialization convention.
+
+Run the in-memory deterministic sanity tests:
+
+```bash
+python3 -m unittest test_rmt_protection.py
+```
+
+Create RMT processed data without touching the existing clean/CKKS folders:
+
+```bash
+python3 prepare_data.py --rmt-only --image-size 256 --seed 42
+```
+
+The RMT training conditions can then be selected explicitly (this starts
+training, so run it only when ready):
+
+```bash
+python3 run_multi_seed.py --models tinyunet --conditions rmt_block16_n0 rmt_block16_n005 rmt_block16_n010 rmt_block8_n005 rmt_block32_n005 --seeds 42 101 202 303
+```

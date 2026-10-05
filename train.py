@@ -29,7 +29,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from config import PROCESSED_ROOT, RUNS_ROOT, CONDITIONS
+from config import PROCESSED_ROOT, RUNS_ROOT, CONDITIONS, RMT_CONDITIONS, RMT_TRANSFORM_SEED, RMT_KEY_ID
 from dataset import MedicalSegmentationDataset
 from metrics import segmentation_metrics
 from model import TinyUNet
@@ -187,10 +187,11 @@ def train_condition(
 
     Output directory: runs/<model_name>/<condition>/seed_<seed>/
     """
+    if condition in RMT_CONDITIONS and model_name != "tinyunet":
+        raise ValueError("RMT experiment conditions are restricted to TinyUNet.")
+
     # ---- Run directory (seed-level) ----------------------------------------
     run_dir = RUNS_ROOT / model_name / condition / f"seed_{seed}"
-    run_dir.mkdir(parents=True, exist_ok=True)
-
     metrics_path = run_dir / "test_metrics.json"
 
     # Resume: skip if already finished
@@ -200,6 +201,12 @@ def train_condition(
             f"test_metrics.json already exists."
         )
         return json.loads(metrics_path.read_text())
+
+    if condition in RMT_CONDITIONS and run_dir.exists() and any(run_dir.iterdir()):
+        raise FileExistsError(
+            f"Refusing to overwrite incomplete RMT run artifacts in {run_dir}"
+        )
+    run_dir.mkdir(parents=True, exist_ok=True)
 
     # ---- Reproducibility ---------------------------------------------------
     seed_everything(seed)
@@ -312,7 +319,7 @@ def train_condition(
         "model":         model_name,
         "condition":     condition,
         "seed":          seed,
-        "protection_percent": CONDITIONS[condition],
+        "protection_percent": CONDITIONS.get(condition),
         "best_epoch":    checkpoint["epoch"],
         "best_val_dice": checkpoint["best_val_dice"],
         "test_loss":     test["loss"],
@@ -324,6 +331,13 @@ def train_condition(
         "test_pred_foreground_fraction": test["pred_foreground_fraction"],
         "test_gt_foreground_fraction":   test["gt_foreground_fraction"],
     }
+    if condition in RMT_CONDITIONS:
+        result.update({
+            "rmt_block_size": RMT_CONDITIONS[condition]["block_size"],
+            "rmt_noise_level": RMT_CONDITIONS[condition]["noise_level"],
+            "rmt_transform_seed": RMT_TRANSFORM_SEED,
+            "rmt_key_id": RMT_KEY_ID,
+        })
 
     # Persist immediately — so GPU interruption after this point loses nothing
     with open(metrics_path, "w") as f:
@@ -350,8 +364,8 @@ def main():
     parser.add_argument(
         "--condition",
         required=True,
-        choices=list(CONDITIONS),
-        help="Protection condition (must match a key in config.CONDITIONS).",
+        choices=[*CONDITIONS, *RMT_CONDITIONS],
+        help="Condition name from the configured CKKS and RMT conditions.",
     )
     parser.add_argument("--epochs",     type=int,   default=35)
     parser.add_argument("--batch-size", type=int,   default=16)
